@@ -95,58 +95,60 @@ func Do(config *Config) error {
 		log.WithFields(log.Fields{
 			"name": file.Name(),
 			"size": file.Size(),
-			"time": file.ModTime(),
-		}).Print("New demo found")
+			"time": file.ModTime().String(),
+		}).Infof("New demo found")
 	}
-	if len(filtered) > 1 {
-		sshClient, errClient := NewSSHClient(config)
-		if errClient != nil {
-			return errClient
+	if len(filtered) <= 1 {
+		return nil
+	}
+	sshClient, errClient := NewSSHClient(config)
+	if errClient != nil {
+		return errClient
+	}
+	defer func() {
+		if errDisc := sshClient.Close(); errDisc != nil {
+			log.Errorf("Failed to close ssh connection cleanly: %v", errDisc)
 		}
-		defer func() {
-			if errDisc := sshClient.Close(); errDisc != nil {
-				log.Errorf("Failed to close ssh connection cleanly: %v", errDisc)
-			}
-		}()
-		sftpClient, sftpClientErr := sftp.NewClient(sshClient.UnderlyingClient())
-		if sftpClientErr != nil {
-			return sftpClientErr
+	}()
+	sftpClient, sftpClientErr := sftp.NewClient(sshClient.UnderlyingClient())
+	if sftpClientErr != nil {
+		return sftpClientErr
+	}
+	if errMkDir := sftpClient.MkdirAll(config.RemoteRoot); errMkDir != nil {
+		log.Fatalf("Cannot make dest dir: %v", errMkDir)
+	}
+	for _, file := range filtered[1:] {
+		srcFile := filepath.Join(config.LocalRoot, file.Name())
+		destFile := filepath.Join(config.RemoteRoot, file.Name())
+		log.WithFields(log.Fields{
+			"src":  srcFile,
+			"dest": destFile,
+			"size": file.Size(),
+		}).Infof("Uploading SourceTV demo...")
+		tStart := time.Now()
+		of, errOf := sftpClient.Create(destFile)
+		if errOf != nil {
+			log.Fatalf("Error opening remote file: %v", errOf)
 		}
-		if errMkDir := sftpClient.MkdirAll(config.RemoteRoot); errMkDir != nil {
-			log.Fatalf("Cannot make dest dir: %v", errMkDir)
+		demoData, errReadDemoData := ioutil.ReadFile(srcFile)
+		if errReadDemoData != nil {
+			log.Fatalf("Failed to read demo data file: %v", errReadDemoData)
 		}
-		for _, file := range filtered {
-			srcFile := filepath.Join(config.LocalRoot, file.Name())
-			destFile := filepath.Join(config.RemoteRoot, file.Name())
-			log.WithFields(log.Fields{
-				"src":  srcFile,
-				"dest": destFile,
-				"size": file.Size(),
-			}).Infof("Uploading SourceTV demo...")
-			tStart := time.Now()
-			of, errOf := sftpClient.Create(destFile)
-			if errOf != nil {
-				log.Fatalf("Error opening remote file: %v", errOf)
-			}
-			demoData, errReadDemoData := ioutil.ReadFile(srcFile)
-			if errReadDemoData != nil {
-				log.Fatalf("Failed to read demo data file: %v", errReadDemoData)
-			}
-			wroteCount, errWrite := of.Write(demoData)
-			if errWrite != nil {
-				log.Fatalf("Failed to write data: %v", errWrite)
-			}
-			log.WithFields(log.Fields{
-				"written":  wroteCount,
-				"duration": time.Since(tStart).String(),
-			}).Infof("Upload successful")
-			if errRemove := os.Remove(srcFile); errRemove != nil {
-				log.WithFields(log.Fields{"src": srcFile}).Errorf("Error deleteing local demo file: %v", errRemove)
-			} else {
-				log.WithFields(log.Fields{"src": srcFile}).Debugf("Deleted local demo file")
-			}
+		wroteCount, errWrite := of.Write(demoData)
+		if errWrite != nil {
+			log.Fatalf("Failed to write data: %v", errWrite)
+		}
+		log.WithFields(log.Fields{
+			"written":  wroteCount,
+			"duration": time.Since(tStart).String(),
+		}).Infof("Upload successful")
+		if errRemove := os.Remove(srcFile); errRemove != nil {
+			log.WithFields(log.Fields{"src": srcFile}).Errorf("Error deleteing local demo file: %v", errRemove)
+		} else {
+			log.WithFields(log.Fields{"src": srcFile}).Infof("Deleted local demo file")
 		}
 	}
+
 	return nil
 }
 
@@ -174,6 +176,7 @@ func main() {
 		ctx    = context.Background()
 		t0     = time.NewTicker(time.Second * 5)
 	)
+	log.Infof("Starting stvup")
 	if errConfig := readConfig(&config); errConfig != nil {
 		log.Fatalf("Error reading config: %v", errConfig)
 	}
