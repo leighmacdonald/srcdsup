@@ -3,7 +3,7 @@ name: publish
 on: [push]
 
 jobs:
-  publish-hello-world-image:
+  publish-stvup-image:
     runs-on: ubuntu-latest
 
     steps:
@@ -16,7 +16,7 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Build the hello-world Docker image
+    - name: Build the stvup image
       run: |
         docker build . --tag ghcr.io/leighmacdonald/stvup:${GITHUB_REF##*/}
         docker run ghcr.io/leighmacdonald/stvup:${GITHUB_REF##*/}
