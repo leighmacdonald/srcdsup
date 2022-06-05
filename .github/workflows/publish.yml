@@ -19,5 +19,4 @@ jobs:
     - name: Build the stvup image
       run: |
         docker build . --tag ghcr.io/leighmacdonald/stvup:${GITHUB_REF##*/}
-        docker run ghcr.io/leighmacdonald/stvup:${GITHUB_REF##*/}
         docker push ghcr.io/leighmacdonald/stvup:${GITHUB_REF##*/}
