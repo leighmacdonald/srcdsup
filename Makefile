@@ -1,5 +1,5 @@
 BRANCH := $(shell git rev-parse --abbrev-ref HEAD)
-TAGGED_IMAGE = leighmacdonald/stvup:$(BRANCH)
+TAGGED_IMAGE = ghcr.io/leighmacdonald/stvup:$(BRANCH)
 
 image:
 	@docker build -t $(TAGGED_IMAGE) .
