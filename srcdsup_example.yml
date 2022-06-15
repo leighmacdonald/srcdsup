@@ -1,0 +1,28 @@
+---
+
+update_interval: 1m
+
+remotes:
+  - name: gbans_demo
+    type: gbans_demo
+    password: unique_gbans_server_token
+
+  - name: gbans_game_log
+    type: gbans_game_log
+    password: unique_gbans_server_token
+
+rules:
+  - name: logs
+    src: ~/logs/*.log
+    remote: gbans_game_log
+    server: 'test-3'
+
+  - name: stac_logs
+    src: ~/logs/stac/*.log
+    remote: gbans_game_log
+    server: 'test-3'
+
+  - name: demos
+    src: ~/stv_demos/*.dem
+    remote: gbans_demo
+    server: 'test-3'

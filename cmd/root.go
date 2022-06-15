@@ -12,9 +12,9 @@ import (
 var (
 	cfgFile string
 	rootCmd = &cobra.Command{
-		Use:   "stvup",
-		Short: "stvup",
-		Long:  `SourceTV (& More) Uploader`,
+		Use:   "srcdsup",
+		Short: "srcdsup",
+		Long:  `SRCDS File Uploader`,
 		Run: func(cmd *cobra.Command, args []string) {
 			srcdsup.Start()
 		},

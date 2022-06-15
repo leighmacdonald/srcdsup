@@ -9,34 +9,40 @@ import (
 	"time"
 )
 
-type RemoteServerConfig struct {
-	PrivateKeyPath string `mapstructure:"private_key_path"`
-	Username       string `mapstructure:"username"`
-	Password       string `mapstructure:"password"`
-	Host           string `mapstructure:"host"`
-	Port           int    `mapstructure:"port"`
+type RemoteServiceType string
+
+const (
+	SSH          RemoteServiceType = "ssh"
+	HTTP         RemoteServiceType = "http"
+	GBansDemos   RemoteServiceType = "gbans_demo"
+	GBansGameLog RemoteServiceType = "gbans_game_log"
+)
+
+type RemoteConfig struct {
+	Name           string            `mapstructure:"name"`
+	Username       string            `mapstructure:"username"`
+	Password       string            `mapstructure:"password"`
+	Host           string            `mapstructure:"host"`
+	Port           int               `mapstructure:"port"`
+	Type           RemoteServiceType `mapstructure:"type"`
+	Root           string            `mapstructure:"root"`
+	PrivateKeyPath string            `mapstructure:"private_key_path"`
 }
 
 type RulesConfig struct {
-	Name       string `mapstructure:"name"`
-	Src        string `mapstructure:"src"`
-	Handler    string `mapstructure:"handler"`
-	RemoteDest string `mapstructure:"dest"`
-	LocalRoot  string `mapstructure:"local_root"`
-	RemoteRoot string `mapstructure:"remote_root"`
-	Suffix     string `mapstructure:"suffix"`
+	Name   string `mapstructure:"name"`
+	Src    string `mapstructure:"src"`
+	Remote string `mapstructure:"remote"`
 }
 
 type RootConfig struct {
 	UpdateInterval       time.Duration
-	UpdateIntervalString string             `mapstructure:"update_interval"`
-	RemoteDest           RemoteServerConfig `mapstructure:"remote_dest"`
-	Rules                []RulesConfig      `mapstructure:"rules"`
+	UpdateIntervalString string         `mapstructure:"update_interval"`
+	Remotes              []RemoteConfig `mapstructure:"remotes"`
+	Rules                []RulesConfig  `mapstructure:"rules"`
 }
 
-var (
-	Global RootConfig
-)
+var Global RootConfig
 
 // Read reads in config file and ENV variables if set.
 func Read(cfgFiles ...string) error {
@@ -47,8 +53,8 @@ func Read(cfgFiles ...string) error {
 	}
 	viper.AddConfigPath(home)
 	viper.AddConfigPath(".")
-	viper.SetConfigName("stvup")
-	viper.SetEnvPrefix("stvup")
+	viper.SetConfigName("srcdsup")
+	viper.SetEnvPrefix("srcdsup")
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 	found := false

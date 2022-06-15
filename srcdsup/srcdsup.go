@@ -22,15 +22,21 @@ type ServerLogUpload struct {
 	Body       string `json:"body"`
 }
 
-func update(rules []config.RulesConfig, remoteConfig config.RemoteServerConfig) error {
+type uploaderFunc func(ruleSet config.RulesConfig, conf config.RemoteConfig, files []fs.FileInfo) error
+
+func update(rules []config.RulesConfig, remoteConfig []config.RemoteConfig,
+	uploadHandlers map[config.RemoteServiceType]uploaderFunc) error {
+	// TODO
+	// - alternate upload types
+	// - http remote sink
 	for _, ruleSet := range rules {
-		fileInfo, rootErr := ioutil.ReadDir(ruleSet.LocalRoot)
+		fileInfo, rootErr := ioutil.ReadDir(ruleSet.Src)
 		if rootErr != nil {
 			return rootErr
 		}
 		var filteredFiles []fs.FileInfo
 		for _, f := range fileInfo {
-			if strings.HasSuffix(strings.ToLower(f.Name()), ruleSet.Suffix) {
+			if strings.HasSuffix(strings.ToLower(f.Name()), "FIXME suffix") {
 				filteredFiles = append(filteredFiles, f)
 			}
 		}
@@ -49,15 +55,14 @@ func update(rules []config.RulesConfig, remoteConfig config.RemoteServerConfig) 
 				"time": file.ModTime().String(),
 			}).Infof("New rule match found")
 		}
-		if errUpload := upload(ruleSet, remoteConfig, filteredFiles); errUpload != nil {
+		if errUpload := upload(ruleSet, remoteConfig, filteredFiles, uploadHandlers); errUpload != nil {
 			return errors.Wrapf(errUpload, "Failed to upload new match")
 		}
 	}
 
 	return nil
 }
-
-func upload(rules config.RulesConfig, remoteConfig config.RemoteServerConfig, files []fs.FileInfo) error {
+func uploadSSH(ruleSet config.RulesConfig, remoteConfig config.RemoteConfig, files []fs.FileInfo) error {
 	sshClient, errClient := NewSSHClient(remoteConfig)
 	if errClient != nil {
 		return errClient
@@ -71,12 +76,12 @@ func upload(rules config.RulesConfig, remoteConfig config.RemoteServerConfig, fi
 	if sftpClientErr != nil {
 		return sftpClientErr
 	}
-	if errMkDir := sftpClient.MkdirAll(rules.RemoteRoot); errMkDir != nil {
+	if errMkDir := sftpClient.MkdirAll(remoteConfig.Root); errMkDir != nil {
 		log.Fatalf("Cannot make dest dir: %v", errMkDir)
 	}
 	for _, file := range files[1:] {
-		srcFile := filepath.Join(rules.LocalRoot, file.Name())
-		destFile := filepath.Join(rules.RemoteRoot, file.Name())
+		srcFile := filepath.Join(ruleSet.Src, file.Name())
+		destFile := filepath.Join(remoteConfig.Root, file.Name())
 		log.WithFields(log.Fields{
 			"src":  srcFile,
 			"dest": destFile,
@@ -108,9 +113,28 @@ func upload(rules config.RulesConfig, remoteConfig config.RemoteServerConfig, fi
 	return nil
 }
 
+func upload(rules config.RulesConfig, remoteConfigs []config.RemoteConfig, files []fs.FileInfo,
+	uploadHandlers map[config.RemoteServiceType]uploaderFunc) error {
+	var remoteConf config.RemoteConfig
+	for _, rc := range remoteConfigs {
+		if rules.Remote == rc.Name {
+			remoteConf = rc
+			break
+		}
+	}
+	if remoteConf.Name == "" {
+		return errors.Errorf("Failed to find remote: %v", rules.Remote)
+	}
+	handler, handlerFound := uploadHandlers[remoteConf.Type]
+	if !handlerFound {
+		return errors.Errorf("No handler registered for type: %v", remoteConf.Type)
+	}
+	return handler(rules, remoteConf, files)
+}
+
 // NewSSHClient returns a new connected ssh client.
 // Close() must be called.
-func NewSSHClient(config config.RemoteServerConfig) (*sshclient.Client, error) {
+func NewSSHClient(config config.RemoteConfig) (*sshclient.Client, error) {
 	var (
 		addr = fmt.Sprintf("%s:%d", config.Host, config.Port)
 	)
@@ -130,18 +154,31 @@ func Start() {
 	var (
 		ctx = context.Background()
 		t0  = time.NewTicker(time.Second * 5)
+
+		uploadHandlers = map[config.RemoteServiceType]uploaderFunc{
+			config.SSH: uploadSSH,
+		}
 	)
-	log.Infof("Starting stvup")
+	log.Infof("Starting srcdsup")
+	for _, rules := range config.Global.Rules {
+		log.WithFields(log.Fields{
+			"src":    rules.Src,
+			"name":   rules.Name,
+			"remote": rules.Remote,
+		}).Infof("Watching path")
+	}
 	for {
 		select {
 		case <-t0.C:
 			log.Debugf("Update started")
-			if errCheck := update(config.Global.Rules, config.Global.RemoteDest); errCheck != nil {
+			if errCheck := update(config.Global.Rules, config.Global.Remotes, uploadHandlers); errCheck != nil {
 				log.Errorf("Failed to update: %v", errCheck)
+				continue
 			}
 			log.Debugf("Update complete")
 		case <-ctx.Done():
 			log.Infof("Exiting")
+			return
 		}
 	}
 }
