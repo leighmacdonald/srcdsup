@@ -1,5 +1,5 @@
 BRANCH := $(shell git rev-parse --abbrev-ref HEAD)
-TAGGED_IMAGE = leighmacdonald/srcdsup:$(BRANCH)
+TAGGED_IMAGE = ghcr.io/leighmacdonald/srcdsup:$(BRANCH)
 
 all: bin
 
