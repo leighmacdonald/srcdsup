@@ -12,10 +12,10 @@ import (
 type RemoteServiceType string
 
 const (
-	SSH          RemoteServiceType = "ssh"
-	HTTP         RemoteServiceType = "http"
+	SSH RemoteServiceType = "ssh"
+	// HTTP         RemoteServiceType = "http"
 	GBansDemos   RemoteServiceType = "gbans_demo"
-	GBansGameLog RemoteServiceType = "gbans_game_log"
+	GBansGameLog RemoteServiceType = "gbans_log"
 )
 
 type RemoteConfig struct {
@@ -23,6 +23,7 @@ type RemoteConfig struct {
 	Username       string            `mapstructure:"username"`
 	Password       string            `mapstructure:"password"`
 	Host           string            `mapstructure:"host"`
+	Path           string            `mapstructure:"path"`
 	Port           int               `mapstructure:"port"`
 	Type           RemoteServiceType `mapstructure:"type"`
 	Root           string            `mapstructure:"root"`

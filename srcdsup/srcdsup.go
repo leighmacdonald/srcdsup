@@ -1,7 +1,10 @@
 package srcdsup
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"github.com/helloyi/go-sshclient"
 	"github.com/leighmacdonald/srcdsup/config"
@@ -10,6 +13,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"io/fs"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,22 +21,26 @@ import (
 	"time"
 )
 
-type ServerLogUpload struct {
-	ServerName string `json:"server_name"`
-	Body       string `json:"body"`
-}
+type uploaderFunc func(ctx context.Context, ruleSet config.RulesConfig, conf config.RemoteConfig, files []fs.FileInfo) error
 
-type uploaderFunc func(ruleSet config.RulesConfig, conf config.RemoteConfig, files []fs.FileInfo) error
-
-func update(rules []config.RulesConfig, remoteConfig []config.RemoteConfig,
-	uploadHandlers map[config.RemoteServiceType]uploaderFunc) error {
+func update(ctx context.Context, rules []config.RulesConfig, remoteConfig []config.RemoteConfig, uploadHandlers map[config.RemoteServiceType]uploaderFunc) error {
 	// TODO
 	// - alternate upload types
 	// - http remote sink
 	for _, ruleSet := range rules {
-		fileInfo, rootErr := ioutil.ReadDir(ruleSet.Src)
-		if rootErr != nil {
-			return rootErr
+		matches, errGlob := filepath.Glob(ruleSet.Src)
+		if errGlob != nil {
+			log.Warnf("Error globbing files: %v", errGlob)
+			continue
+		}
+		var fileInfo []fs.FileInfo
+		for _, f := range matches {
+			stat, errStat := os.Stat(f)
+			if errStat != nil {
+				log.Errorf("Could not read log file: %v", errStat)
+				continue
+			}
+			fileInfo = append(fileInfo, stat)
 		}
 		var filteredFiles []fs.FileInfo
 		for _, f := range fileInfo {
@@ -44,6 +52,7 @@ func update(rules []config.RulesConfig, remoteConfig []config.RemoteConfig,
 		sort.Slice(filteredFiles, func(i, j int) bool {
 			return filteredFiles[i].ModTime().After(filteredFiles[j].ModTime())
 		})
+		// Ignore the current file
 		if len(filteredFiles) <= 1 {
 			continue
 		}
@@ -55,14 +64,14 @@ func update(rules []config.RulesConfig, remoteConfig []config.RemoteConfig,
 				"time": file.ModTime().String(),
 			}).Infof("New rule match found")
 		}
-		if errUpload := upload(ruleSet, remoteConfig, filteredFiles, uploadHandlers); errUpload != nil {
+		if errUpload := upload(ctx, ruleSet, remoteConfig, filteredFiles, uploadHandlers); errUpload != nil {
 			return errors.Wrapf(errUpload, "Failed to upload new match")
 		}
 	}
 
 	return nil
 }
-func uploadSSH(ruleSet config.RulesConfig, remoteConfig config.RemoteConfig, files []fs.FileInfo) error {
+func uploadSSH(_ context.Context, ruleSet config.RulesConfig, remoteConfig config.RemoteConfig, files []fs.FileInfo) error {
 	sshClient, errClient := NewSSHClient(remoteConfig)
 	if errClient != nil {
 		return errClient
@@ -113,8 +122,7 @@ func uploadSSH(ruleSet config.RulesConfig, remoteConfig config.RemoteConfig, fil
 	return nil
 }
 
-func upload(rules config.RulesConfig, remoteConfigs []config.RemoteConfig, files []fs.FileInfo,
-	uploadHandlers map[config.RemoteServiceType]uploaderFunc) error {
+func upload(ctx context.Context, rules config.RulesConfig, remoteConfigs []config.RemoteConfig, files []fs.FileInfo, uploadHandlers map[config.RemoteServiceType]uploaderFunc) error {
 	var remoteConf config.RemoteConfig
 	for _, rc := range remoteConfigs {
 		if rules.Remote == rc.Name {
@@ -129,7 +137,7 @@ func upload(rules config.RulesConfig, remoteConfigs []config.RemoteConfig, files
 	if !handlerFound {
 		return errors.Errorf("No handler registered for type: %v", remoteConf.Type)
 	}
-	return handler(rules, remoteConf, files)
+	return handler(ctx, rules, remoteConf, files)
 }
 
 // NewSSHClient returns a new connected ssh client.
@@ -150,13 +158,70 @@ func NewSSHClient(config config.RemoteConfig) (*sshclient.Client, error) {
 	}
 }
 
+type serverLogUpload struct {
+	ServerName string                   `json:"server_name"`
+	Body       string                   `json:"body"`
+	Type       config.RemoteServiceType `json:"type"`
+}
+
+func uploadGbansReal(ctx context.Context, typ config.RemoteServiceType, ruleSet config.RulesConfig,
+	remoteConfig config.RemoteConfig, files []fs.FileInfo) error {
+	client := http.Client{Timeout: time.Minute * 30}
+	url := fmt.Sprintf("https://%s:%d/%s", remoteConfig.Host, remoteConfig.Port, remoteConfig.Path)
+	for _, f := range files {
+		localCtx, cancel := context.WithTimeout(ctx, time.Second*30)
+		srcFile := filepath.Join(ruleSet.Src, f.Name())
+		body, readErr := ioutil.ReadFile(srcFile)
+		if readErr != nil {
+			cancel()
+			return readErr
+		}
+		request, encodeErr := json.Marshal(serverLogUpload{
+			ServerName: remoteConfig.Name,
+			Body:       base64.StdEncoding.EncodeToString(body),
+			Type:       typ,
+		})
+		if encodeErr != nil {
+			cancel()
+			return errors.Wrapf(encodeErr, "Failed to encode request body")
+		}
+		req, errReq := http.NewRequestWithContext(localCtx, "POST", url, bytes.NewReader(request))
+		if errReq != nil {
+			cancel()
+			return errors.Wrapf(errReq, "Failed to create request")
+		}
+		req.Header.Add("Authorization", remoteConfig.Password)
+		resp, errResp := client.Do(req)
+		if errResp != nil {
+			cancel()
+			return errors.Wrapf(errResp, "Failed to upload entity")
+		}
+
+		if resp.StatusCode != http.StatusCreated {
+			log.Errorf("Invalid response code: %d", resp.StatusCode)
+			cancel()
+			return errors.New("Invalid status code")
+		}
+		cancel()
+	}
+	return nil
+}
+
+func uploadGbansType(t config.RemoteServiceType) uploaderFunc {
+	return func(ctx context.Context, ruleSet config.RulesConfig, remoteConfig config.RemoteConfig, files []fs.FileInfo) error {
+		return uploadGbansReal(ctx, t, ruleSet, remoteConfig, files)
+	}
+}
+
 func Start() {
 	var (
 		ctx = context.Background()
 		t0  = time.NewTicker(time.Second * 5)
 
 		uploadHandlers = map[config.RemoteServiceType]uploaderFunc{
-			config.SSH: uploadSSH,
+			config.SSH:          uploadSSH,
+			config.GBansGameLog: uploadGbansType(config.GBansGameLog),
+			config.GBansDemos:   uploadGbansType(config.GBansDemos),
 		}
 	)
 	log.Infof("Starting srcdsup")
@@ -171,7 +236,7 @@ func Start() {
 		select {
 		case <-t0.C:
 			log.Debugf("Update started")
-			if errCheck := update(config.Global.Rules, config.Global.Remotes, uploadHandlers); errCheck != nil {
+			if errCheck := update(ctx, config.Global.Rules, config.Global.Remotes, uploadHandlers); errCheck != nil {
 				log.Errorf("Failed to update: %v", errCheck)
 				continue
 			}
