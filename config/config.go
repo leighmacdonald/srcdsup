@@ -5,6 +5,7 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -22,18 +23,18 @@ type RemoteConfig struct {
 	Name           string            `mapstructure:"name"`
 	Username       string            `mapstructure:"username"`
 	Password       string            `mapstructure:"password"`
-	Host           string            `mapstructure:"host"`
-	Path           string            `mapstructure:"path"`
-	Port           int               `mapstructure:"port"`
+	Url            string            `mapstructure:"url"`
 	Type           RemoteServiceType `mapstructure:"type"`
 	Root           string            `mapstructure:"root"`
 	PrivateKeyPath string            `mapstructure:"private_key_path"`
 }
 
 type RulesConfig struct {
-	Name   string `mapstructure:"name"`
-	Src    string `mapstructure:"src"`
-	Remote string `mapstructure:"remote"`
+	Name    string `mapstructure:"name"`
+	Root    string `mapstructure:"root"`
+	Pattern string `mapstructure:"pattern"`
+	Remote  string `mapstructure:"remote"`
+	Server  string `mapstructure:"server"`
 }
 
 type RootConfig struct {
@@ -76,6 +77,15 @@ func Read(cfgFiles ...string) error {
 		log.Warnf("Failed to parse update interval, using default of 60s: %v", errDuration)
 	}
 	rootCfg.UpdateInterval = duration
+
+	for i, r := range rootCfg.Rules {
+		absPath, errPath := filepath.Abs(r.Root)
+		if errPath != nil {
+			return errors.Wrapf(errPath, "Failed to get abs path for rule")
+		}
+		rootCfg.Rules[i].Root = absPath
+	}
+
 	Global = rootCfg
 	if found {
 		log.Infof("Using config file: %s", viper.ConfigFileUsed())

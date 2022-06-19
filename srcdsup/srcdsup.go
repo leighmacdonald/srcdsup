@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"github.com/helloyi/go-sshclient"
 	"github.com/leighmacdonald/srcdsup/config"
 	"github.com/pkg/errors"
@@ -15,9 +14,10 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -28,9 +28,12 @@ func update(ctx context.Context, rules []config.RulesConfig, remoteConfig []conf
 	// - alternate upload types
 	// - http remote sink
 	for _, ruleSet := range rules {
-		matches, errGlob := filepath.Glob(ruleSet.Src)
+		matches, errGlob := filepath.Glob(path.Join(ruleSet.Root, ruleSet.Pattern))
 		if errGlob != nil {
 			log.Warnf("Error globbing files: %v", errGlob)
+			continue
+		}
+		if matches == nil {
 			continue
 		}
 		var fileInfo []fs.FileInfo
@@ -42,21 +45,15 @@ func update(ctx context.Context, rules []config.RulesConfig, remoteConfig []conf
 			}
 			fileInfo = append(fileInfo, stat)
 		}
-		var filteredFiles []fs.FileInfo
-		for _, f := range fileInfo {
-			if strings.HasSuffix(strings.ToLower(f.Name()), "FIXME suffix") {
-				filteredFiles = append(filteredFiles, f)
-			}
-		}
 		// Newest first
-		sort.Slice(filteredFiles, func(i, j int) bool {
-			return filteredFiles[i].ModTime().After(filteredFiles[j].ModTime())
+		sort.Slice(fileInfo, func(i, j int) bool {
+			return fileInfo[i].ModTime().After(fileInfo[j].ModTime())
 		})
 		// Ignore the current file
-		if len(filteredFiles) <= 1 {
+		if len(fileInfo) <= 1 {
 			continue
 		}
-		for _, file := range filteredFiles[1:] {
+		for _, file := range fileInfo[1:] {
 			log.WithFields(log.Fields{
 				"rule": ruleSet.Name,
 				"name": file.Name(),
@@ -64,7 +61,7 @@ func update(ctx context.Context, rules []config.RulesConfig, remoteConfig []conf
 				"time": file.ModTime().String(),
 			}).Infof("New rule match found")
 		}
-		if errUpload := upload(ctx, ruleSet, remoteConfig, filteredFiles, uploadHandlers); errUpload != nil {
+		if errUpload := upload(ctx, ruleSet, remoteConfig, fileInfo, uploadHandlers); errUpload != nil {
 			return errors.Wrapf(errUpload, "Failed to upload new match")
 		}
 	}
@@ -89,7 +86,7 @@ func uploadSSH(_ context.Context, ruleSet config.RulesConfig, remoteConfig confi
 		log.Fatalf("Cannot make dest dir: %v", errMkDir)
 	}
 	for _, file := range files[1:] {
-		srcFile := filepath.Join(ruleSet.Src, file.Name())
+		srcFile := filepath.Join(ruleSet.Root, file.Name())
 		destFile := filepath.Join(remoteConfig.Root, file.Name())
 		log.WithFields(log.Fields{
 			"src":  srcFile,
@@ -143,49 +140,58 @@ func upload(ctx context.Context, rules config.RulesConfig, remoteConfigs []confi
 // NewSSHClient returns a new connected ssh client.
 // Close() must be called.
 func NewSSHClient(config config.RemoteConfig) (*sshclient.Client, error) {
-	var (
-		addr = fmt.Sprintf("%s:%d", config.Host, config.Port)
-	)
 	if config.PrivateKeyPath != "" {
 		if config.Password != "" {
-			return sshclient.DialWithKeyWithPassphrase(addr, config.Username, config.PrivateKeyPath, config.Password)
+			return sshclient.DialWithKeyWithPassphrase(config.Url, config.Username, config.PrivateKeyPath, config.Password)
 		} else {
 			// without passphrase
-			return sshclient.DialWithKey(addr, config.Username, config.PrivateKeyPath)
+			return sshclient.DialWithKey(config.Url, config.Username, config.PrivateKeyPath)
 		}
 	} else {
-		return sshclient.DialWithPasswd(addr, config.Username, config.Password)
+		return sshclient.DialWithPasswd(config.Url, config.Username, config.Password)
 	}
 }
 
 type serverLogUpload struct {
 	ServerName string                   `json:"server_name"`
+	MapName    string                   `json:"map_name"`
 	Body       string                   `json:"body"`
 	Type       config.RemoteServiceType `json:"type"`
 }
 
-func uploadGbansReal(ctx context.Context, typ config.RemoteServiceType, ruleSet config.RulesConfig,
+var mapName = regexp.MustCompile(`^auto-\d+-\d+-(?P<map>.+?)\.dem$`)
+
+func uploadGbans(ctx context.Context, typ config.RemoteServiceType, ruleSet config.RulesConfig,
 	remoteConfig config.RemoteConfig, files []fs.FileInfo) error {
-	client := http.Client{Timeout: time.Minute * 30}
-	url := fmt.Sprintf("https://%s:%d/%s", remoteConfig.Host, remoteConfig.Port, remoteConfig.Path)
 	for _, f := range files {
-		localCtx, cancel := context.WithTimeout(ctx, time.Second*30)
-		srcFile := filepath.Join(ruleSet.Src, f.Name())
+		client := http.Client{Timeout: time.Second * 120}
+		var demoMapName = ""
+		localCtx, cancel := context.WithTimeout(ctx, time.Second*120)
+		if typ == config.GBansDemos {
+			matches := mapName.FindStringSubmatch(f.Name())
+			if matches == nil {
+				cancel()
+				continue
+			}
+			demoMapName = matches[1]
+		}
+		srcFile := filepath.Join(ruleSet.Root, f.Name())
 		body, readErr := ioutil.ReadFile(srcFile)
 		if readErr != nil {
 			cancel()
 			return readErr
 		}
 		request, encodeErr := json.Marshal(serverLogUpload{
-			ServerName: remoteConfig.Name,
+			ServerName: ruleSet.Server,
 			Body:       base64.StdEncoding.EncodeToString(body),
 			Type:       typ,
+			MapName:    demoMapName,
 		})
 		if encodeErr != nil {
 			cancel()
 			return errors.Wrapf(encodeErr, "Failed to encode request body")
 		}
-		req, errReq := http.NewRequestWithContext(localCtx, "POST", url, bytes.NewReader(request))
+		req, errReq := http.NewRequestWithContext(localCtx, "POST", remoteConfig.Url, bytes.NewReader(request))
 		if errReq != nil {
 			cancel()
 			return errors.Wrapf(errReq, "Failed to create request")
@@ -196,12 +202,16 @@ func uploadGbansReal(ctx context.Context, typ config.RemoteServiceType, ruleSet 
 			cancel()
 			return errors.Wrapf(errResp, "Failed to upload entity")
 		}
-
 		if resp.StatusCode != http.StatusCreated {
 			log.Errorf("Invalid response code: %d", resp.StatusCode)
 			cancel()
 			return errors.New("Invalid status code")
 		}
+		if errRemove := os.Remove(srcFile); errRemove != nil {
+			cancel()
+			return errors.Wrapf(errRemove, "Could not cleanup source file")
+		}
+		log.WithFields(log.Fields{"src": srcFile}).Debugf("Removed source file")
 		cancel()
 	}
 	return nil
@@ -209,7 +219,7 @@ func uploadGbansReal(ctx context.Context, typ config.RemoteServiceType, ruleSet 
 
 func uploadGbansType(t config.RemoteServiceType) uploaderFunc {
 	return func(ctx context.Context, ruleSet config.RulesConfig, remoteConfig config.RemoteConfig, files []fs.FileInfo) error {
-		return uploadGbansReal(ctx, t, ruleSet, remoteConfig, files)
+		return uploadGbans(ctx, t, ruleSet, remoteConfig, files)
 	}
 }
 
@@ -227,7 +237,7 @@ func Start() {
 	log.Infof("Starting srcdsup")
 	for _, rules := range config.Global.Rules {
 		log.WithFields(log.Fields{
-			"src":    rules.Src,
+			"root":   rules.Root,
 			"name":   rules.Name,
 			"remote": rules.Remote,
 		}).Infof("Watching path")
