@@ -5,6 +5,7 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
+	"io/fs"
 	"path/filepath"
 	"strings"
 	"time"
@@ -30,11 +31,15 @@ type RemoteConfig struct {
 }
 
 type RulesConfig struct {
-	Name    string `mapstructure:"name"`
-	Root    string `mapstructure:"root"`
-	Pattern string `mapstructure:"pattern"`
-	Remote  string `mapstructure:"remote"`
-	Server  string `mapstructure:"server"`
+	Name    string   `mapstructure:"name"`
+	Root    string   `mapstructure:"root"`
+	Pattern string   `mapstructure:"pattern"`
+	Remotes []string `mapstructure:"remotes"`
+	Server  string   `mapstructure:"server"`
+}
+
+func (rc RulesConfig) SrcFile(f fs.FileInfo) string {
+	return filepath.Join(rc.Root, f.Name())
 }
 
 type RootConfig struct {

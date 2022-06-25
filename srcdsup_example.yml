@@ -1,28 +1,47 @@
 ---
 
+# How frequently to scan for files
 update_interval: 1m
 
+# Remotes define a set of potential services that
+# files can be transferred to.
 remotes:
-  - name: gbans_demo
+  # Upload demos to a gbans server
+  - name: demos
     type: gbans_demo
+    url: https://example.com/api/demo
     password: unique_gbans_server_token
 
-  - name: gbans_game_log
-    type: gbans_game_log
+  # Upload logs to a gbans server
+  - name: logs
+    type: gbans_log
+    url: https://example.com/api/demo
     password: unique_gbans_server_token
+
+  # Upload logs to a chat-log server
+  # https://github.com/crescentrose/chat-log
+  - name: chat-log
+    # uses same format as gbans
+    type: gbans_log
+    url: https://example.com/upload
+    # Pre shared auth key
+    password: "xxxxxxxxxxxxxxxxxxxxx"
 
 rules:
+  # Find log files
   - name: logs
     src: ~/logs/*.log
-    remote: gbans_game_log
+    # Send logs to both the gbans & chat-log remotes
+    remotes: [ logs, chat-log ]
+    # Unique identifier for the instance
     server: 'test-3'
 
   - name: stac_logs
     src: ~/logs/stac/*.log
-    remote: gbans_game_log
+    remotes: [ logs ]
     server: 'test-3'
 
   - name: demos
     src: ~/stv_demos/*.dem
-    remote: gbans_demo
+    remotes: [ demos ]
     server: 'test-3'

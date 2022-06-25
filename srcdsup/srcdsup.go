@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -120,21 +121,34 @@ func uploadSSH(_ context.Context, ruleSet config.RulesConfig, remoteConfig confi
 }
 
 func upload(ctx context.Context, rules config.RulesConfig, remoteConfigs []config.RemoteConfig, files []fs.FileInfo, uploadHandlers map[config.RemoteServiceType]uploaderFunc) error {
-	var remoteConf config.RemoteConfig
 	for _, rc := range remoteConfigs {
-		if rules.Remote == rc.Name {
-			remoteConf = rc
-			break
+		for _, remoteRule := range rules.Remotes {
+			if remoteRule == rc.Name {
+				if rc.Name == "" {
+					return errors.Errorf("Failed to find remote: %v", remoteRule)
+				}
+				handler, handlerFound := uploadHandlers[rc.Type]
+				if !handlerFound {
+					return errors.Errorf("No handler registered for type: %v", rc.Type)
+				}
+				handlerErr := handler(ctx, rules, rc, files)
+				if handlerErr != nil {
+					log.WithFields(log.Fields{
+						"type": rc.Type,
+						"name": rc.Name,
+					}).Errorf("Upload handler error: %v", handlerErr)
+					continue
+				}
+			}
 		}
 	}
-	if remoteConf.Name == "" {
-		return errors.Errorf("Failed to find remote: %v", rules.Remote)
+	for _, filePath := range files {
+		if errRemove := os.Remove(rules.SrcFile(filePath)); errRemove != nil {
+			return errors.Wrapf(errRemove, "Could not cleanup source file")
+		}
+		log.WithFields(log.Fields{"src": filePath.Name()}).Infof("Removed source file")
 	}
-	handler, handlerFound := uploadHandlers[remoteConf.Type]
-	if !handlerFound {
-		return errors.Errorf("No handler registered for type: %v", remoteConf.Type)
-	}
-	return handler(ctx, rules, remoteConf, files)
+	return nil
 }
 
 // NewSSHClient returns a new connected ssh client.
@@ -164,6 +178,12 @@ var mapName = regexp.MustCompile(`^auto-\d+-\d+-(?P<map>.+?)\.dem$`)
 func uploadGbans(ctx context.Context, typ config.RemoteServiceType, ruleSet config.RulesConfig,
 	remoteConfig config.RemoteConfig, files []fs.FileInfo) error {
 	for _, f := range files {
+		log.WithFields(log.Fields{
+			"remote": remoteConfig.Name,
+			"type":   remoteConfig.Type,
+			"file":   f.Name(),
+			"name":   remoteConfig.Name,
+		}).Infof("Uploading file")
 		client := http.Client{Timeout: time.Second * 120}
 		var demoMapName = ""
 		localCtx, cancel := context.WithTimeout(ctx, time.Second*120)
@@ -175,8 +195,7 @@ func uploadGbans(ctx context.Context, typ config.RemoteServiceType, ruleSet conf
 			}
 			demoMapName = matches[1]
 		}
-		srcFile := filepath.Join(ruleSet.Root, f.Name())
-		body, readErr := ioutil.ReadFile(srcFile)
+		body, readErr := ioutil.ReadFile(ruleSet.SrcFile(f))
 		if readErr != nil {
 			cancel()
 			return readErr
@@ -204,14 +223,13 @@ func uploadGbans(ctx context.Context, typ config.RemoteServiceType, ruleSet conf
 		}
 		if resp.StatusCode != http.StatusCreated {
 			log.Errorf("Invalid response code: %d", resp.StatusCode)
+			respBody, errRespBody := ioutil.ReadAll(resp.Body)
+			if errRespBody == nil {
+				log.Debugf("Error respomse: %v", respBody)
+			}
 			cancel()
-			return errors.New("Invalid status code")
+			return errors.Errorf("Invalid status code: %s", string(respBody))
 		}
-		if errRemove := os.Remove(srcFile); errRemove != nil {
-			cancel()
-			return errors.Wrapf(errRemove, "Could not cleanup source file")
-		}
-		log.WithFields(log.Fields{"src": srcFile}).Debugf("Removed source file")
 		cancel()
 	}
 	return nil
@@ -239,7 +257,7 @@ func Start() {
 		log.WithFields(log.Fields{
 			"root":   rules.Root,
 			"name":   rules.Name,
-			"remote": rules.Remote,
+			"remote": strings.Join(rules.Remotes, ","),
 		}).Infof("Watching path")
 	}
 	for {
