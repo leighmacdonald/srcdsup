@@ -166,7 +166,7 @@ func NewSSHClient(config config.RemoteConfig) (*sshclient.Client, error) {
 	}
 }
 
-type serverLogUpload struct {
+type ServerLogUpload struct {
 	ServerName string                   `json:"server_name"`
 	MapName    string                   `json:"map_name"`
 	Body       string                   `json:"body"`
@@ -200,7 +200,7 @@ func uploadGbans(ctx context.Context, typ config.RemoteServiceType, ruleSet conf
 			cancel()
 			return readErr
 		}
-		request, encodeErr := json.Marshal(serverLogUpload{
+		request, encodeErr := json.Marshal(ServerLogUpload{
 			ServerName: ruleSet.Server,
 			Body:       base64.StdEncoding.EncodeToString(body),
 			Type:       typ,
