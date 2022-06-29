@@ -25,9 +25,6 @@ import (
 type uploaderFunc func(ctx context.Context, ruleSet config.RulesConfig, conf config.RemoteConfig, files []fs.FileInfo) error
 
 func update(ctx context.Context, rules []config.RulesConfig, remoteConfig []config.RemoteConfig, uploadHandlers map[config.RemoteServiceType]uploaderFunc) error {
-	// TODO
-	// - alternate upload types
-	// - http remote sink
 	for _, ruleSet := range rules {
 		matches, errGlob := filepath.Glob(path.Join(ruleSet.Root, ruleSet.Pattern))
 		if errGlob != nil {
@@ -216,6 +213,7 @@ func uploadGbans(ctx context.Context, typ config.RemoteServiceType, ruleSet conf
 			return errors.Wrapf(errReq, "Failed to create request")
 		}
 		req.Header.Add("Authorization", remoteConfig.Password)
+		req.Header.Add("Content-Type", "application/json")
 		resp, errResp := client.Do(req)
 		if errResp != nil {
 			cancel()
