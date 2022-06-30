@@ -172,7 +172,7 @@ type ServerLogUpload struct {
 
 var mapName = regexp.MustCompile(`^auto-\d+-\d+-(?P<map>.+?)\.dem$`)
 
-func uploadGbans(ctx context.Context, typ config.RemoteServiceType, ruleSet config.RulesConfig,
+func uploadGbans(ctx context.Context, serviceType config.RemoteServiceType, ruleSet config.RulesConfig,
 	remoteConfig config.RemoteConfig, files []fs.FileInfo) error {
 	for _, f := range files {
 		log.WithFields(log.Fields{
@@ -184,7 +184,7 @@ func uploadGbans(ctx context.Context, typ config.RemoteServiceType, ruleSet conf
 		client := http.Client{Timeout: time.Second * 120}
 		var demoMapName = ""
 		localCtx, cancel := context.WithTimeout(ctx, time.Second*120)
-		if typ == config.GBansDemos {
+		if serviceType == config.GBansDemos {
 			matches := mapName.FindStringSubmatch(f.Name())
 			if matches == nil {
 				cancel()
@@ -199,8 +199,8 @@ func uploadGbans(ctx context.Context, typ config.RemoteServiceType, ruleSet conf
 		}
 		request, encodeErr := json.Marshal(ServerLogUpload{
 			ServerName: ruleSet.Server,
-			Body:       base64.StdEncoding.EncodeToString(body),
-			Type:       typ,
+			Body:       base64.URLEncoding.EncodeToString(body),
+			Type:       serviceType,
 			MapName:    demoMapName,
 		})
 		if encodeErr != nil {
