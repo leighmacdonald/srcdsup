@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/dustin/go-humanize"
 	"github.com/helloyi/go-sshclient"
 	"github.com/leighmacdonald/srcdsup/config"
 	"github.com/pkg/errors"
@@ -175,12 +176,6 @@ var mapName = regexp.MustCompile(`^auto-\d+-\d+-(?P<map>.+?)\.dem$`)
 func uploadGbans(ctx context.Context, serviceType config.RemoteServiceType, ruleSet config.RulesConfig,
 	remoteConfig config.RemoteConfig, files []fs.FileInfo) error {
 	for _, f := range files {
-		log.WithFields(log.Fields{
-			"remote": remoteConfig.Name,
-			"type":   remoteConfig.Type,
-			"file":   f.Name(),
-			"name":   remoteConfig.Name,
-		}).Infof("Uploading file")
 		client := http.Client{Timeout: time.Second * 120}
 		var demoMapName = ""
 		localCtx, cancel := context.WithTimeout(ctx, time.Second*120)
@@ -197,6 +192,13 @@ func uploadGbans(ctx context.Context, serviceType config.RemoteServiceType, rule
 			cancel()
 			return readErr
 		}
+		log.WithFields(log.Fields{
+			"remote": remoteConfig.Name,
+			"type":   remoteConfig.Type,
+			"file":   f.Name(),
+			"name":   remoteConfig.Name,
+			"size":   humanize.Bytes(uint64(len(body))),
+		}).Infof("Uploading file")
 		request, encodeErr := json.Marshal(ServerLogUpload{
 			ServerName: ruleSet.Server,
 			Body:       base64.RawStdEncoding.EncodeToString(body),
@@ -219,16 +221,25 @@ func uploadGbans(ctx context.Context, serviceType config.RemoteServiceType, rule
 			cancel()
 			return errors.Wrapf(errResp, "Failed to upload entity")
 		}
-		if resp.StatusCode != http.StatusCreated {
-			log.Errorf("Invalid response code: %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
 			respBody, errRespBody := ioutil.ReadAll(resp.Body)
 			if errRespBody == nil {
-				log.Debugf("Error respomse: %v", respBody)
+				log.Debugf("Error response: %v", respBody)
+				if errClose := resp.Body.Close(); errClose != nil {
+					log.Errorf("Failed to close response: %v", errClose)
+				}
 			}
+
 			cancel()
 			return errors.Errorf("Invalid status code: %s", string(respBody))
 		}
 		cancel()
+		log.WithFields(log.Fields{
+			"remote": remoteConfig.Name,
+			"type":   remoteConfig.Type,
+			"file":   f.Name(),
+			"name":   remoteConfig.Name,
+		}).Debugf("Upload successful")
 	}
 	return nil
 }
@@ -242,7 +253,7 @@ func uploadGbansType(t config.RemoteServiceType) uploaderFunc {
 func Start() {
 	var (
 		ctx = context.Background()
-		t0  = time.NewTicker(time.Second * 5)
+		t0  = time.NewTicker(time.Second * 30)
 
 		uploadHandlers = map[config.RemoteServiceType]uploaderFunc{
 			config.SSH:          uploadSSH,
