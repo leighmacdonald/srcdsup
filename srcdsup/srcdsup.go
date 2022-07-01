@@ -201,7 +201,7 @@ func uploadGbans(ctx context.Context, serviceType config.RemoteServiceType, rule
 		}).Infof("Uploading file")
 		request, encodeErr := json.Marshal(ServerLogUpload{
 			ServerName: ruleSet.Server,
-			Body:       base64.RawStdEncoding.EncodeToString(body),
+			Body:       base64.StdEncoding.EncodeToString(body),
 			Type:       serviceType,
 			MapName:    demoMapName,
 		})
@@ -278,6 +278,7 @@ func Start() {
 				continue
 			}
 			log.Debugf("Update complete")
+			t0.Reset(time.Second * 30)
 		case <-ctx.Done():
 			log.Infof("Exiting")
 			return
