@@ -199,7 +199,7 @@ func uploadGbans(ctx context.Context, serviceType config.RemoteServiceType, rule
 		}
 		request, encodeErr := json.Marshal(ServerLogUpload{
 			ServerName: ruleSet.Server,
-			Body:       base64.URLEncoding.EncodeToString(body),
+			Body:       base64.RawStdEncoding.EncodeToString(body),
 			Type:       serviceType,
 			MapName:    demoMapName,
 		})
