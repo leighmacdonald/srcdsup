@@ -192,6 +192,11 @@ func uploadGbans(ctx context.Context, serviceType config.RemoteServiceType, rule
 			cancel()
 			return readErr
 		}
+		if len(body) <= 1250000 {
+			log.WithFields(log.Fields{"file": f.Name()}).Debugf("Skipping small file")
+			cancel()
+			continue
+		}
 		log.WithFields(log.Fields{
 			"remote": remoteConfig.Name,
 			"type":   remoteConfig.Type,
