@@ -14,16 +14,15 @@ import (
 type RemoteServiceType string
 
 const (
-	SSH RemoteServiceType = "ssh"
-	// HTTP         RemoteServiceType = "http"
-	GBansDemos   RemoteServiceType = "gbans_demo"
-	GBansGameLog RemoteServiceType = "gbans_log"
+	GBansDemos RemoteServiceType = "gbans_demo"
+	//GBansGameLog RemoteServiceType = "gbans_log"
 )
 
 type RemoteConfig struct {
 	Name           string            `mapstructure:"name"`
 	Username       string            `mapstructure:"username"`
 	Password       string            `mapstructure:"password"`
+	AuthToken      string            `mapstructure:"-"`
 	Url            string            `mapstructure:"url"`
 	Type           RemoteServiceType `mapstructure:"type"`
 	Root           string            `mapstructure:"root"`
@@ -38,18 +37,18 @@ type RulesConfig struct {
 	Server  string   `mapstructure:"server"`
 }
 
-func (rc RulesConfig) SrcFile(f fs.FileInfo) string {
+func (rc *RulesConfig) SrcFile(f fs.FileInfo) string {
 	return filepath.Join(rc.Root, f.Name())
 }
 
 type RootConfig struct {
 	UpdateInterval       time.Duration
-	UpdateIntervalString string         `mapstructure:"update_interval"`
-	Remotes              []RemoteConfig `mapstructure:"remotes"`
-	Rules                []RulesConfig  `mapstructure:"rules"`
+	UpdateIntervalString string          `mapstructure:"update_interval"`
+	Remotes              []*RemoteConfig `mapstructure:"remotes"`
+	Rules                []*RulesConfig  `mapstructure:"rules"`
 }
 
-var Global RootConfig
+var Global *RootConfig
 
 // Read reads in config file and ENV variables if set.
 func Read(cfgFiles ...string) error {
@@ -91,9 +90,9 @@ func Read(cfgFiles ...string) error {
 		rootCfg.Rules[i].Root = absPath
 	}
 
-	Global = rootCfg
+	Global = &rootCfg
 	if found {
-		log.Infof("Using config file: %s", viper.ConfigFileUsed())
+		log.WithFields(log.Fields{"path": viper.ConfigFileUsed()}).Infof("Using config file")
 	} else {
 		log.Warnf("No configuration found, defaults used")
 	}
