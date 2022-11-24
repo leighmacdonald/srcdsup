@@ -1,47 +1,16 @@
 ---
 
-# How frequently to scan for files
-update_interval: 1m
+update_interval: 5s
 
-# Remotes define a set of potential services that
-# files can be transferred to.
 remotes:
-  # Upload demos to a gbans server
-  - name: demos
+  - name: localhost-1
     type: gbans_demo
-    url: https://example.com/api/demo
-    password: unique_gbans_server_token
-
-  # Upload logs to a gbans server
-  - name: logs
-    type: gbans_log
-    url: https://example.com/api/demo
-    password: unique_gbans_server_token
-
-  # Upload logs to a chat-log server
-  # https://github.com/crescentrose/chat-log
-  - name: chat-log
-    # uses same format as gbans
-    type: gbans_log
-    url: https://example.com/upload
-    # Pre shared auth key
-    password: "xxxxxxxxxxxxxxxxxxxxx"
+    url: http://gbans.localhost:6006
+    password: xxxxxxxxxxxxxxxxxxxx
 
 rules:
-  # Find log files
-  - name: logs
-    src: ~/logs/*.log
-    # Send logs to both the gbans & chat-log remotes
-    remotes: [ logs, chat-log ]
-    # Unique identifier for the instance
-    server: 'test-3'
-
-  - name: stac_logs
-    src: ~/logs/stac/*.log
-    remotes: [ logs ]
-    server: 'test-3'
-
   - name: demos
-    src: ~/stv_demos/*.dem
-    remotes: [ demos ]
-    server: 'test-3'
+    root: /home/tf2server/tf-dedicated/tf/stv_demos/complete/
+    pattern: "*.dem"
+    remotes: [ localhost-1 ]
+    server: localhost-1
