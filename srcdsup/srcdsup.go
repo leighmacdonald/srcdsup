@@ -33,17 +33,24 @@ func update(ctx context.Context, rules []*config.RulesConfig, remoteConfig []*co
 		if matches == nil {
 			continue
 		}
-		var fileInfo []fs.FileInfo
+		var fileCollection []fs.FileInfo
 		for _, f := range matches {
 			stat, errStat := os.Stat(f)
 			if errStat != nil {
 				log.Errorf("Could not read log file: %v", errStat)
 				continue
 			}
-			fileInfo = append(fileInfo, stat)
+			jsonPath, jsonPathErr := filepath.Abs(strings.Join([]string{f, "json"}, "."))
+			if jsonPathErr != nil {
+				return jsonPathErr
+			}
+			if _, errStatJson := os.Stat(jsonPath); os.IsNotExist(errStatJson) {
+				return errors.Wrapf(errStatJson, "Cant find json metadata")
+			}
+			fileCollection = append(fileCollection, stat)
 		}
 
-		for _, file := range fileInfo[1:] {
+		for _, file := range fileCollection {
 			log.WithFields(log.Fields{
 				"rule": ruleSet.Name,
 				"name": file.Name(),
@@ -51,7 +58,7 @@ func update(ctx context.Context, rules []*config.RulesConfig, remoteConfig []*co
 				"time": file.ModTime().String(),
 			}).Infof("New rule match found")
 		}
-		if errUpload := upload(ctx, ruleSet, remoteConfig, fileInfo, uploadHandlers); errUpload != nil {
+		if errUpload := upload(ctx, ruleSet, remoteConfig, fileCollection, uploadHandlers); errUpload != nil {
 			return errors.Wrapf(errUpload, "Failed to upload new match")
 		}
 	}
@@ -86,9 +93,19 @@ func upload(ctx context.Context, rules *config.RulesConfig, remoteConfigs []*con
 		if errRemove := os.RemoveAll(rules.SrcFile(filePath)); errRemove != nil {
 			return errors.Wrapf(errRemove, "Could not cleanup source file")
 		}
+		if errRemove := os.RemoveAll(rules.SrcFile(filePath) + "json"); errRemove != nil {
+			return errors.Wrapf(errRemove, "Could not cleanup source file")
+		}
+
 		log.WithFields(log.Fields{"src": filePath.Name()}).Infof("Removed source file")
 	}
 	return nil
+}
+
+type PlayerStats struct {
+	Score      int `json:"score"`
+	ScoreTotal int `json:"score_total"`
+	Deaths     int `json:"deaths"`
 }
 
 type ServerLogUpload struct {
@@ -97,6 +114,11 @@ type ServerLogUpload struct {
 	Body       string                   `json:"body"`
 	DemoName   string                   `json:"demo_name"`
 	Type       config.RemoteServiceType `json:"type"`
+	Scores     map[string]PlayerStats   `json:"scores"`
+}
+
+type scoreJson struct {
+	Scores map[string]PlayerStats `json:"scores"`
 }
 
 var mapName = regexp.MustCompile(`^\S+-\d+-\d+-\d+-(?P<map>.+?)\.dem$`)
@@ -105,16 +127,29 @@ func uploadGbans(ctx context.Context, serviceType config.RemoteServiceType, rule
 	remoteConfig *config.RemoteConfig, files []fs.FileInfo) error {
 	for _, f := range files {
 		client := http.Client{Timeout: time.Second * 120}
-		var demoMapName = ""
 		localCtx, cancel := context.WithTimeout(ctx, time.Second*120)
-		if serviceType == config.GBansDemos {
-			matches := mapName.FindStringSubmatch(f.Name())
-			if matches == nil {
-				cancel()
-				continue
-			}
-			demoMapName = matches[1]
+		if serviceType != config.GBansDemos {
+			cancel()
+			return errors.New("Invalid service type")
 		}
+
+		jsonPath, pathErr := filepath.Abs(strings.Join([]string{ruleSet.SrcFile(f), "json"}, "."))
+		if pathErr != nil {
+			cancel()
+			return pathErr
+		}
+		jsonBody, readErrJson := os.ReadFile(jsonPath)
+		if readErrJson != nil {
+			cancel()
+			return readErrJson
+		}
+
+		var stats scoreJson
+		if errEnc := json.Unmarshal(jsonBody, &stats); errEnc != nil {
+			cancel()
+			return errEnc
+		}
+
 		body, readErr := os.ReadFile(ruleSet.SrcFile(f))
 		if readErr != nil {
 			cancel()
@@ -132,13 +167,15 @@ func uploadGbans(ctx context.Context, serviceType config.RemoteServiceType, rule
 			"name":   remoteConfig.Name,
 			"size":   humanize.Bytes(uint64(len(body))),
 		}).Infof("Uploading file")
-		request, encodeErr := json.Marshal(ServerLogUpload{
+		payload := ServerLogUpload{
 			ServerName: ruleSet.Server,
 			Body:       base64.StdEncoding.EncodeToString(body),
 			Type:       serviceType,
-			MapName:    demoMapName,
+			MapName:    "",
 			DemoName:   f.Name(),
-		})
+			Scores:     stats.Scores,
+		}
+		request, encodeErr := json.Marshal(payload)
 		if encodeErr != nil {
 			cancel()
 			return errors.Wrapf(encodeErr, "Failed to encode request body")
