@@ -90,14 +90,16 @@ func upload(ctx context.Context, rules *config.RulesConfig, remoteConfigs []*con
 		}
 	}
 	for _, filePath := range files {
-		if errRemove := os.RemoveAll(rules.SrcFile(filePath)); errRemove != nil {
+		fp := rules.SrcFile(filePath)
+		if errRemove := os.RemoveAll(fp); errRemove != nil {
 			return errors.Wrapf(errRemove, "Could not cleanup source file")
 		}
-		if errRemove := os.RemoveAll(rules.SrcFile(filePath) + "json"); errRemove != nil {
+		log.WithFields(log.Fields{"path": fp}).Debugf("Removed source file")
+		jsonPath := strings.Join([]string{fp, "json"}, ".")
+		if errRemove := os.RemoveAll(jsonPath); errRemove != nil {
 			return errors.Wrapf(errRemove, "Could not cleanup source file")
 		}
-
-		log.WithFields(log.Fields{"src": filePath.Name()}).Infof("Removed source file")
+		log.WithFields(log.Fields{"path": jsonPath}).Debugf("Removed source file")
 	}
 	return nil
 }
@@ -117,8 +119,9 @@ type ServerLogUpload struct {
 	Scores     map[string]PlayerStats   `json:"scores"`
 }
 
-type scoreJson struct {
-	Scores map[string]PlayerStats `json:"scores"`
+type metaData struct {
+	MapName string                 `json:"map_name"`
+	Scores  map[string]PlayerStats `json:"scores"`
 }
 
 var mapName = regexp.MustCompile(`^\S+-\d+-\d+-\d+-(?P<map>.+?)\.dem$`)
@@ -144,7 +147,7 @@ func uploadGbans(ctx context.Context, serviceType config.RemoteServiceType, rule
 			return readErrJson
 		}
 
-		var stats scoreJson
+		var stats metaData
 		if errEnc := json.Unmarshal(jsonBody, &stats); errEnc != nil {
 			cancel()
 			return errEnc
@@ -171,7 +174,7 @@ func uploadGbans(ctx context.Context, serviceType config.RemoteServiceType, rule
 			ServerName: ruleSet.Server,
 			Body:       base64.StdEncoding.EncodeToString(body),
 			Type:       serviceType,
-			MapName:    "",
+			MapName:    stats.MapName,
 			DemoName:   f.Name(),
 			Scores:     stats.Scores,
 		}
