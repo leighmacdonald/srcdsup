@@ -35,7 +35,7 @@ linters:
     - gci
     - ginkgolinter
     - gocheckcompilerdirectives
-    - gochecknoglobals
+    # - gochecknoglobals
     #- gochecknoinits
     #- gocognit
     #- goconst

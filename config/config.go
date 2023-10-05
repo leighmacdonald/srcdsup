@@ -1,21 +1,22 @@
 package config
 
 import (
-	"github.com/mitchellh/go-homedir"
-	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
-	"github.com/spf13/viper"
 	"io/fs"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mitchellh/go-homedir"
+	"github.com/pkg/errors"
+	"github.com/spf13/viper"
+	"go.uber.org/zap"
 )
 
 type RemoteServiceType string
 
 const (
 	GBansDemos RemoteServiceType = "gbans_demo"
-	//GBansGameLog RemoteServiceType = "gbans_log"
+	// GBansGameLog RemoteServiceType = "gbans_log".
 )
 
 type RemoteConfig struct {
@@ -23,7 +24,7 @@ type RemoteConfig struct {
 	Username       string            `mapstructure:"username"`
 	Password       string            `mapstructure:"password"`
 	AuthToken      string            `mapstructure:"-"`
-	Url            string            `mapstructure:"url"`
+	URL            string            `mapstructure:"url"`
 	Type           RemoteServiceType `mapstructure:"type"`
 	Root           string            `mapstructure:"root"`
 	PrivateKeyPath string            `mapstructure:"private_key_path"`
@@ -57,44 +58,57 @@ func Read(cfgFiles ...string) error {
 	if errHomeDir != nil {
 		return errors.Wrapf(errHomeDir, "Failed to get HOME dir")
 	}
+
 	viper.AddConfigPath(home)
 	viper.AddConfigPath(".")
 	viper.SetConfigName("srcdsup")
 	viper.SetEnvPrefix("srcdsup")
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
-	found := false
+
 	for _, cfgFilePath := range cfgFiles {
 		viper.SetConfigFile(cfgFilePath)
+
 		if errReadConfig := viper.ReadInConfig(); errReadConfig != nil {
 			return errors.Wrapf(errReadConfig, "Failed to read config file: %s", cfgFilePath)
 		}
-		found = true
 	}
+
 	var rootCfg RootConfig
 	if errUnmarshal := viper.Unmarshal(&rootCfg); errUnmarshal != nil {
 		return errors.Wrap(errUnmarshal, "Invalid config syntax")
 	}
+
 	duration, errDuration := time.ParseDuration(rootCfg.UpdateIntervalString)
 	if errDuration != nil {
 		duration = time.Second * 60
-		log.Warnf("Failed to parse update interval, using default of 60s: %v", errDuration)
 	}
+
 	rootCfg.UpdateInterval = duration
 
-	for i, r := range rootCfg.Rules {
-		absPath, errPath := filepath.Abs(r.Root)
+	for index, rule := range rootCfg.Rules {
+		absPath, errPath := filepath.Abs(rule.Root)
 		if errPath != nil {
 			return errors.Wrapf(errPath, "Failed to get abs path for rule")
 		}
-		rootCfg.Rules[i].Root = absPath
+
+		rootCfg.Rules[index].Root = absPath
 	}
 
 	Global = &rootCfg
-	if found {
-		log.WithFields(log.Fields{"path": viper.ConfigFileUsed()}).Infof("Using config file")
-	} else {
-		log.Warnf("No configuration found, defaults used")
-	}
+
 	return nil
+}
+
+func MustCreateLogger() *zap.Logger {
+	loggingConfig := zap.NewProductionConfig()
+	loggingConfig.DisableCaller = true
+	loggingConfig.Level.SetLevel(zap.InfoLevel)
+
+	l, errLogger := loggingConfig.Build()
+	if errLogger != nil {
+		panic("Failed to create log config")
+	}
+
+	return l.Named("srcdsup")
 }
