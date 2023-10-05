@@ -265,15 +265,11 @@ func refreshTokens(ctx context.Context) {
 		if errBody != nil {
 			return "", errors.Wrap(errBody, "Failed to read response body")
 		}
-		var resp gbansApiResponse
+		var resp authResponse
 		if errUnmarshal := json.Unmarshal(respBody, &resp); errUnmarshal != nil {
 			return "", errors.Wrap(errUnmarshal, "Failed to unmarshal response body")
 		}
-		var ar authResponse
-		if errUnmarshal := json.Unmarshal(resp.Result, &ar); errUnmarshal != nil {
-			return "", errors.Wrap(errUnmarshal, "Failed to unmarshal result body")
-		}
-		return ar.Token, nil
+		return resp.Token, nil
 	}
 
 	for i, remoteCfg := range config.Global.Remotes {
