@@ -11,3 +11,6 @@ image:
 
 publish: image
 	@docker push $(TAGGED_IMAGE)
+
+static:
+	staticcheck -go 1.21 ./...
