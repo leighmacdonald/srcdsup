@@ -17,7 +17,6 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/leighmacdonald/srcdsup/config"
 	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
 	"go.uber.org/zap"
 )
 
@@ -242,7 +241,7 @@ func uploadGbans(ctx context.Context, log *zap.Logger, serviceType config.Remote
 
 			cancel()
 
-			return errors.Errorf("Invalid status code: %s", string(respBody))
+			return errors.Errorf("Invalid status code: %d", resp.StatusCode)
 		}
 
 		cancel()
@@ -264,7 +263,7 @@ func uploadGbansType(t config.RemoteServiceType, log *zap.Logger) uploaderFunc {
 	}
 }
 
-func refreshTokens(ctx context.Context) {
+func refreshTokens(ctx context.Context, log *zap.Logger) {
 	type authRequest struct {
 		ServerName string `json:"server_name"`
 		Key        string `json:"key"`
@@ -321,10 +320,12 @@ func refreshTokens(ctx context.Context) {
 		token, errToken := fetchToken(remoteCfg)
 
 		if errToken != nil {
-			log.WithError(errToken).Errorf("Failed to fetch new token")
+			log.Error("Failed to fetch new token", zap.Error(errToken))
 
 			continue
 		}
+
+		log.Info("Refreshed token successfully", zap.String("name", remoteCfg.Name))
 
 		config.Global.Remotes[index].AuthToken = token
 	}
@@ -359,7 +360,7 @@ func Start() {
 		case <-tokenRefreshTicker.C:
 			updateChan <- true
 		case <-updateChan:
-			refreshTokens(ctx)
+			refreshTokens(ctx, logger)
 		case <-fileScanTicker.C:
 			if errCheck := update(ctx, logger, config.Global.Rules, config.Global.Remotes, uploadHandlers); errCheck != nil {
 				logger.Error("Failed to update", zap.Error(errCheck))
