@@ -8,6 +8,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/spf13/cobra v1.5.0
 	github.com/spf13/viper v1.12.0
+	github.com/ulikunitz/xz v0.5.11
 	go.uber.org/zap v1.17.0
 )
 
