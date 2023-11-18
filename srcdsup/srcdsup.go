@@ -1,6 +1,7 @@
 package srcdsup
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"context"
@@ -19,7 +20,6 @@ import (
 
 	"github.com/leighmacdonald/srcdsup/config"
 	"github.com/pkg/errors"
-	"github.com/ulikunitz/xz"
 	"go.uber.org/zap"
 )
 
@@ -142,7 +142,38 @@ type metaData struct {
 	Scores  map[string]PlayerStats `json:"scores"`
 }
 
-// var mapName = regexp.MustCompile(`^\S+-\d+-\d+-\d+-(?P<map>.+?)\.dem$`)
+func compressReaderBytes(log *zap.Logger, demoName string, demoBytes []byte, jsonBytes []byte) ([]byte, error) {
+	var compressedDemo bytes.Buffer
+
+	demoBufWriter := bufio.NewWriter(&compressedDemo)
+	writer := zip.NewWriter(demoBufWriter)
+
+	outFile, errWriter := writer.Create(demoName)
+	if errWriter != nil {
+		return nil, errors.Wrap(errWriter, "Failed to write body to xz")
+	}
+
+	if _, errWrite := outFile.Write(demoBytes); errWrite != nil {
+		return nil, errors.Wrap(errWrite, "Failed to close writer")
+	}
+
+	jsonFile, errJSON := writer.Create("stats.json")
+	if errJSON != nil {
+		return nil, errors.Wrap(errJSON, "Failed to write json to zip")
+	}
+
+	if _, errWrite := jsonFile.Write(jsonBytes); errWrite != nil {
+		return nil, errors.Wrap(errWrite, "Failed to close writer")
+	}
+
+	if errClose := writer.Close(); errClose != nil {
+		return nil, errors.Wrap(errClose, "Failed to close writer")
+	}
+
+	log.Debug("Compressed size", zap.Int("size", compressedDemo.Len()))
+
+	return compressedDemo.Bytes(), nil
+}
 
 func send(ctx context.Context, log *zap.Logger, serviceType config.RemoteServiceType, ruleSet *config.RulesConfig,
 	curFile fs.FileInfo, remoteConfig *config.RemoteConfig,
@@ -180,20 +211,9 @@ func send(ctx context.Context, log *zap.Logger, serviceType config.RemoteService
 		return errors.Errorf("Skipping small file %s", curFile.Name())
 	}
 
-	var compressedDemo bytes.Buffer
-	demoBufWriter := bufio.NewWriter(&compressedDemo)
-
-	writer, errWriter := xz.NewWriter(demoBufWriter)
-	if errWriter != nil {
-		return errors.Wrap(errWriter, "xz.NewWriter error")
-	}
-
-	if _, errWrite := writer.Write(body); errWrite != nil {
-		return errors.Wrap(errWrite, "Failed to write body to xz")
-	}
-
-	if errClose := writer.Close(); errClose != nil {
-		return errors.Wrap(errClose, "Failed to close writer")
+	compressedBody, errCompress := compressReaderBytes(log, curFile.Name(), body, jsonBody)
+	if errCompress != nil {
+		return errors.Wrap(errCompress, "Failed to compress file")
 	}
 
 	var (
@@ -210,7 +230,7 @@ func send(ctx context.Context, log *zap.Logger, serviceType config.RemoteService
 		return errors.Wrap(errCreatePart, "Failed to create part")
 	}
 
-	if _, errWrite := fileWriter.Write(compressedDemo.Bytes()); errWrite != nil {
+	if _, errWrite := fileWriter.Write(compressedBody); errWrite != nil {
 		return errors.Wrap(errWrite, "Failed to write demo part")
 	}
 
