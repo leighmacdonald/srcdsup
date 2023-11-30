@@ -1,3 +1,4 @@
 *.dem
 *.dem.json
 /srcdsup.yml
+*.zip
