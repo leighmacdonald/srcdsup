@@ -1,17 +1,13 @@
 package srcdsup
 
 import (
-	"archive/zip"
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"io/fs"
 	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"os"
 	"path"
 	"path/filepath"
@@ -82,8 +78,8 @@ func upload(ctx context.Context, log *zap.Logger, rules *config.RulesConfig, rem
 
 					continue
 				}
-				log.Info("Upload completed successfully")
 
+				log.Info("Upload completed successfully")
 			}
 		}
 	}
@@ -98,71 +94,6 @@ func upload(ctx context.Context, log *zap.Logger, rules *config.RulesConfig, rem
 	}
 
 	return nil
-}
-
-func compressReaderBytes(log *zap.Logger, demoName string, demoBytes []byte) (*bytes.Buffer, error) {
-	var compressedDemo bytes.Buffer
-
-	demoBufWriter := bufio.NewWriter(&compressedDemo)
-	writer := zip.NewWriter(demoBufWriter)
-
-	outFile, errWriter := writer.Create(demoName)
-	if errWriter != nil {
-		return nil, errors.Wrap(errWriter, "Failed to write body to zip")
-	}
-
-	if _, errWrite := outFile.Write(demoBytes); errWrite != nil {
-		return nil, errors.Wrap(errWrite, "Failed to close writer")
-	}
-
-	if errClose := writer.Close(); errClose != nil {
-		return nil, errors.Wrap(errClose, "Failed to close writer")
-	}
-
-	log.Debug("Compressed size", zap.Int("size", compressedDemo.Len()))
-
-	return &compressedDemo, nil
-}
-
-func makeMultiPart(demo *bytes.Buffer, name string) ([]byte, string, error) {
-	outBuffer := &bytes.Buffer{}
-	multiPartWriter := multipart.NewWriter(outBuffer)
-
-	partHeader := make(textproto.MIMEHeader)
-	partHeader.Set("Content-Type", "application/octet-stream")
-	partHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="demo"; filename="%s"`, name))
-
-	postBody := &bytes.Buffer{}
-	writer := multipart.NewWriter(postBody)
-
-	fileWriter, errCreatePart := multiPartWriter.CreatePart(partHeader)
-	if errCreatePart != nil {
-		return nil, "", errors.Wrap(errCreatePart, "Failed to create part")
-	}
-
-	if _, errWrite := fileWriter.Write(demo.Bytes()); errWrite != nil {
-		return nil, "", errors.Wrap(errWrite, "Failed to write demo part")
-	}
-
-	if err := writer.Close(); err != nil {
-		return nil, "", errors.Wrap(errCreatePart, "Failed to close writer")
-	}
-
-	return outBuffer.Bytes(), writer.FormDataContentType(), nil
-}
-
-func compressDemo(log *zap.Logger, filePath string, name string) (*bytes.Buffer, error) {
-	body, readErr := os.ReadFile(filePath)
-	if readErr != nil {
-		return nil, errors.Wrap(readErr, "Failed to read file")
-	}
-
-	compressedDemo, errCompress := compressReaderBytes(log, name, body)
-	if errCompress != nil {
-		return nil, errors.Wrap(errCompress, "Failed to compress file")
-	}
-
-	return compressedDemo, nil
 }
 
 func send(ctx context.Context, ruleSet *config.RulesConfig,
