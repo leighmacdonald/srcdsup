@@ -1,8 +1,5 @@
 project_name: srcdsup
 
-# frontend is already output to dist, --clean will wipe it, so we use another location
-dist: build
-
 builds:
   - id: srcdsup
     env: [CGO_ENABLED=0]

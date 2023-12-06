@@ -4,7 +4,6 @@ update_interval: 5s
 
 remotes:
   - name: localhost-1
-    type: gbans_demo
     url: http://gbans.localhost:6006
     password: xxxxxxxxxxxxxxxxxxxx
 

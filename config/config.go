@@ -12,22 +12,14 @@ import (
 	"go.uber.org/zap"
 )
 
-type RemoteServiceType string
-
-const (
-	GBansDemos RemoteServiceType = "gbans_demo"
-	// GBansGameLog RemoteServiceType = "gbans_log".
-)
-
 type RemoteConfig struct {
-	Name           string            `mapstructure:"name"`
-	Username       string            `mapstructure:"username"`
-	Password       string            `mapstructure:"password"`
-	AuthToken      string            `mapstructure:"-"`
-	URL            string            `mapstructure:"url"`
-	Type           RemoteServiceType `mapstructure:"type"`
-	Root           string            `mapstructure:"root"`
-	PrivateKeyPath string            `mapstructure:"private_key_path"`
+	Name           string `mapstructure:"name"`
+	Username       string `mapstructure:"username"`
+	Password       string `mapstructure:"password"`
+	AuthToken      string `mapstructure:"-"`
+	URL            string `mapstructure:"url"`
+	Root           string `mapstructure:"root"`
+	PrivateKeyPath string `mapstructure:"private_key_path"`
 }
 
 type RulesConfig struct {

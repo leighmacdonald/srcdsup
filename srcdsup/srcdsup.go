@@ -23,9 +23,7 @@ import (
 	"go.uber.org/zap"
 )
 
-type uploaderFunc func(ctx context.Context, ruleSet *config.RulesConfig, conf *config.RemoteConfig, files []fs.FileInfo) error
-
-func update(ctx context.Context, log *zap.Logger, rules []*config.RulesConfig, remoteConfig []*config.RemoteConfig, uploadHandlers map[config.RemoteServiceType]uploaderFunc) error {
+func update(ctx context.Context, log *zap.Logger, rules []*config.RulesConfig, remoteConfig []*config.RemoteConfig) error {
 	for _, ruleSet := range rules {
 		log.Debug("Updating", zap.String("rule", ruleSet.Name))
 
@@ -50,15 +48,6 @@ func update(ctx context.Context, log *zap.Logger, rules []*config.RulesConfig, r
 				continue
 			}
 
-			jsonPath, jsonPathErr := filepath.Abs(strings.Join([]string{fileMatch, "json"}, "."))
-			if jsonPathErr != nil {
-				return errors.Wrap(jsonPathErr, "Failed to build json file path")
-			}
-
-			if _, errStatJSON := os.Stat(jsonPath); os.IsNotExist(errStatJSON) {
-				return errors.Wrapf(errStatJSON, "Cant find json metadata")
-			}
-
 			fileCollection = append(fileCollection, stat)
 		}
 
@@ -70,7 +59,7 @@ func update(ctx context.Context, log *zap.Logger, rules []*config.RulesConfig, r
 				zap.Time("time", file.ModTime()))
 		}
 
-		if errUpload := upload(ctx, log, ruleSet, remoteConfig, fileCollection, uploadHandlers); errUpload != nil {
+		if errUpload := upload(ctx, log, ruleSet, remoteConfig, fileCollection); errUpload != nil {
 			return errors.Wrapf(errUpload, "Failed to upload new match")
 		}
 	}
@@ -78,7 +67,7 @@ func update(ctx context.Context, log *zap.Logger, rules []*config.RulesConfig, r
 	return nil
 }
 
-func upload(ctx context.Context, log *zap.Logger, rules *config.RulesConfig, remoteConfigs []*config.RemoteConfig, files []fs.FileInfo, uploadHandlers map[config.RemoteServiceType]uploaderFunc) error {
+func upload(ctx context.Context, log *zap.Logger, rules *config.RulesConfig, remoteConfigs []*config.RemoteConfig, files []fs.FileInfo) error {
 	for _, remoteConfig := range remoteConfigs {
 		for _, remoteRule := range rules.Remotes {
 			if remoteRule == remoteConfig.Name {
@@ -86,21 +75,15 @@ func upload(ctx context.Context, log *zap.Logger, rules *config.RulesConfig, rem
 					return errors.Errorf("Failed to find remote: %v", remoteRule)
 				}
 
-				handler, handlerFound := uploadHandlers[remoteConfig.Type]
-				if !handlerFound {
-					return errors.Errorf("No handler registered for type: %v", remoteConfig.Type)
-				}
-
-				if handlerErr := handler(ctx, rules, remoteConfig, files); handlerErr != nil {
+				if handlerErr := uploadGbans(ctx, log, rules, remoteConfig, files); handlerErr != nil {
 					log.Error("Upload handler error",
-						zap.String("type", string(remoteConfig.Type)),
 						zap.String("name", remoteConfig.Name),
 						zap.Error(handlerErr))
 
 					continue
-				} else {
-					log.Info("Upload completed successfully")
 				}
+				log.Info("Upload completed successfully")
+
 			}
 		}
 	}
@@ -112,37 +95,12 @@ func upload(ctx context.Context, log *zap.Logger, rules *config.RulesConfig, rem
 		}
 
 		log.Debug("Removing source file", zap.String("path", srcFile))
-
-		jsonPath := strings.Join([]string{srcFile, "json"}, ".")
-		if errRemove := os.RemoveAll(jsonPath); errRemove != nil {
-			return errors.Wrapf(errRemove, "Could not cleanup source file")
-		}
 	}
 
 	return nil
 }
 
-type PlayerStats struct {
-	Score      int `json:"score"`
-	ScoreTotal int `json:"score_total"`
-	Deaths     int `json:"deaths"`
-}
-
-type ServerLogUpload struct {
-	ServerName string                   `json:"server_name"`
-	MapName    string                   `json:"map_name"`
-	Body       string                   `json:"body"`
-	DemoName   string                   `json:"demo_name"`
-	Type       config.RemoteServiceType `json:"type"`
-	Scores     map[string]PlayerStats   `json:"scores"`
-}
-
-type metaData struct {
-	MapName string                 `json:"map_name"`
-	Scores  map[string]PlayerStats `json:"scores"`
-}
-
-func compressReaderBytes(log *zap.Logger, demoName string, demoBytes []byte, jsonBytes []byte) ([]byte, error) {
+func compressReaderBytes(log *zap.Logger, demoName string, demoBytes []byte) (*bytes.Buffer, error) {
 	var compressedDemo bytes.Buffer
 
 	demoBufWriter := bufio.NewWriter(&compressedDemo)
@@ -150,19 +108,10 @@ func compressReaderBytes(log *zap.Logger, demoName string, demoBytes []byte, jso
 
 	outFile, errWriter := writer.Create(demoName)
 	if errWriter != nil {
-		return nil, errors.Wrap(errWriter, "Failed to write body to xz")
+		return nil, errors.Wrap(errWriter, "Failed to write body to zip")
 	}
 
 	if _, errWrite := outFile.Write(demoBytes); errWrite != nil {
-		return nil, errors.Wrap(errWrite, "Failed to close writer")
-	}
-
-	jsonFile, errJSON := writer.Create("stats.json")
-	if errJSON != nil {
-		return nil, errors.Wrap(errJSON, "Failed to write json to zip")
-	}
-
-	if _, errWrite := jsonFile.Write(jsonBytes); errWrite != nil {
 		return nil, errors.Wrap(errWrite, "Failed to close writer")
 	}
 
@@ -172,124 +121,107 @@ func compressReaderBytes(log *zap.Logger, demoName string, demoBytes []byte, jso
 
 	log.Debug("Compressed size", zap.Int("size", compressedDemo.Len()))
 
-	return compressedDemo.Bytes(), nil
+	return &compressedDemo, nil
 }
 
-func send(ctx context.Context, log *zap.Logger, serviceType config.RemoteServiceType, ruleSet *config.RulesConfig,
+func makeMultiPart(demo *bytes.Buffer, name string) ([]byte, string, error) {
+	outBuffer := &bytes.Buffer{}
+	multiPartWriter := multipart.NewWriter(outBuffer)
+
+	partHeader := make(textproto.MIMEHeader)
+	partHeader.Set("Content-Type", "application/octet-stream")
+	partHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="demo"; filename="%s"`, name))
+
+	postBody := &bytes.Buffer{}
+	writer := multipart.NewWriter(postBody)
+
+	fileWriter, errCreatePart := multiPartWriter.CreatePart(partHeader)
+	if errCreatePart != nil {
+		return nil, "", errors.Wrap(errCreatePart, "Failed to create part")
+	}
+
+	if _, errWrite := fileWriter.Write(demo.Bytes()); errWrite != nil {
+		return nil, "", errors.Wrap(errWrite, "Failed to write demo part")
+	}
+
+	if err := writer.Close(); err != nil {
+		return nil, "", errors.Wrap(errCreatePart, "Failed to close writer")
+	}
+
+	return outBuffer.Bytes(), writer.FormDataContentType(), nil
+}
+
+func compressDemo(log *zap.Logger, filePath string, name string) (*bytes.Buffer, error) {
+	body, readErr := os.ReadFile(filePath)
+	if readErr != nil {
+		return nil, errors.Wrap(readErr, "Failed to read file")
+	}
+
+	compressedDemo, errCompress := compressReaderBytes(log, name, body)
+	if errCompress != nil {
+		return nil, errors.Wrap(errCompress, "Failed to compress file")
+	}
+
+	return compressedDemo, nil
+}
+
+func send(ctx context.Context, ruleSet *config.RulesConfig,
 	curFile fs.FileInfo, remoteConfig *config.RemoteConfig,
 ) error {
-	client := http.Client{Timeout: time.Second * 120}
-
 	localCtx, cancel := context.WithTimeout(ctx, time.Second*120)
 	defer cancel()
 
-	if serviceType != config.GBansDemos {
-		return errors.New("Invalid service type")
+	client := http.Client{Timeout: time.Second * 120}
+
+	file, fileErr := os.Open(ruleSet.SrcFile(curFile))
+	if fileErr != nil {
+		return errors.Wrap(fileErr, "Failed to open demo")
 	}
 
-	jsonPath, pathErr := filepath.Abs(strings.Join([]string{ruleSet.SrcFile(curFile), "json"}, "."))
-	if pathErr != nil {
-		return errors.Wrap(pathErr, "Failed to build path")
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	part, errPart := writer.CreateFormFile("demo", filepath.Base(curFile.Name()))
+	if errPart != nil {
+		return errors.Wrap(fileErr, "Failed to create form file")
 	}
 
-	jsonBody, readErrJSON := os.ReadFile(jsonPath)
-	if readErrJSON != nil {
-		return errors.Wrap(readErrJSON, "Failed to read json file")
+	if _, err := io.Copy(part, file); err != nil {
+		return errors.Wrap(fileErr, "Failed to copy form file")
 	}
 
-	var meta metaData
-	if errEnc := json.Unmarshal(jsonBody, &meta); errEnc != nil {
-		return errors.Wrap(errEnc, "Failed to decode stats")
+	if err := writer.Close(); err != nil {
+		return errors.Wrap(fileErr, "Failed to close form file")
 	}
 
-	body, readErr := os.ReadFile(ruleSet.SrcFile(curFile))
-	if readErr != nil {
-		return errors.Wrap(readErr, "Failed to read file")
-	}
-
-	if len(body) <= 50000 {
-		return errors.Errorf("Skipping small file %s", curFile.Name())
-	}
-
-	compressedBody, errCompress := compressReaderBytes(log, curFile.Name(), body, jsonBody)
-	if errCompress != nil {
-		return errors.Wrap(errCompress, "Failed to compress file")
-	}
-
-	var (
-		outBuffer       = new(bytes.Buffer)
-		multiPartWriter = multipart.NewWriter(outBuffer)
-	)
-
-	h := make(textproto.MIMEHeader)
-	h.Set("Content-Type", "application/octet-stream")
-	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="demo"; filename="%s"`, curFile.Name()))
-
-	fileWriter, errCreatePart := multiPartWriter.CreatePart(h)
-	if errCreatePart != nil {
-		return errors.Wrap(errCreatePart, "Failed to create part")
-	}
-
-	if _, errWrite := fileWriter.Write(compressedBody); errWrite != nil {
-		return errors.Wrap(errWrite, "Failed to write demo part")
-	}
-
-	if errWriteStats := multiPartWriter.WriteField("server_name", ruleSet.Server); errWriteStats != nil {
-		return errors.Wrap(errWriteStats, "Failed to write server_name part")
-	}
-
-	if errWriteStats := multiPartWriter.WriteField("map_name", meta.MapName); errWriteStats != nil {
-		return errors.Wrap(errWriteStats, "Failed to write map_name part")
-	}
-
-	if errWriteStats := multiPartWriter.WriteField("stats", string(jsonBody)); errWriteStats != nil {
-		return errors.Wrap(errWriteStats, "Failed to write stats part")
-	}
-
-	if errClose := multiPartWriter.Close(); errClose != nil {
-		return errors.Wrap(errClose, "Failed to close multipart writer")
-	}
-
-	req, errReq := http.NewRequestWithContext(localCtx, http.MethodPost, remoteConfig.URL+"/api/demo", outBuffer)
+	req, errReq := http.NewRequestWithContext(localCtx, http.MethodPost, remoteConfig.URL+"/api/demo", body)
 	if errReq != nil {
 		return errors.Wrapf(errReq, "Failed to create request")
 	}
 
 	req.Header.Set("Authorization", remoteConfig.AuthToken)
-	req.Header.Set("Content-Type", multiPartWriter.FormDataContentType())
+	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, errResp := client.Do(req)
 	if errResp != nil {
 		return errors.Wrapf(errResp, "Failed to upload entity")
 	}
 
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
-		respBody, errRespBody := io.ReadAll(resp.Body)
-		if errRespBody == nil {
-			log.Error("Upload gbans error", zap.String("body", string(respBody)))
-
-			if errClose := resp.Body.Close(); errClose != nil {
-				log.Error("Failed to close response", zap.Error(errClose))
-			}
-		}
-
-		return errors.Errorf("Invalid status code: %d", resp.StatusCode)
-	}
+	_ = resp.Body.Close()
 
 	return nil
 }
 
-func uploadGbans(ctx context.Context, log *zap.Logger, serviceType config.RemoteServiceType, ruleSet *config.RulesConfig,
+func uploadGbans(ctx context.Context, log *zap.Logger, ruleSet *config.RulesConfig,
 	remoteConfig *config.RemoteConfig, files []fs.FileInfo,
 ) error {
 	for _, curFile := range files {
 		log.Info("Uploading file",
 			zap.String("remote", remoteConfig.Name),
-			zap.String("type", string(remoteConfig.Type)),
 			zap.String("file", curFile.Name()),
 			zap.String("name", remoteConfig.Name))
 
-		if errSend := send(ctx, log, serviceType, ruleSet, curFile, remoteConfig); errSend != nil {
+		if errSend := send(ctx, ruleSet, curFile, remoteConfig); errSend != nil {
 			log.Error("Failed to send file", zap.Error(errSend))
 
 			continue
@@ -297,7 +229,6 @@ func uploadGbans(ctx context.Context, log *zap.Logger, serviceType config.Remote
 
 		log.Info("Uploading successful",
 			zap.String("remote", remoteConfig.Name),
-			zap.String("type", string(remoteConfig.Type)),
 			zap.String("file", curFile.Name()),
 			zap.String("name", remoteConfig.Name))
 	}
@@ -305,16 +236,9 @@ func uploadGbans(ctx context.Context, log *zap.Logger, serviceType config.Remote
 	return nil
 }
 
-func uploadGbansType(t config.RemoteServiceType, log *zap.Logger) uploaderFunc {
-	return func(ctx context.Context, ruleSet *config.RulesConfig, remoteConfig *config.RemoteConfig, files []fs.FileInfo) error {
-		return uploadGbans(ctx, log, t, ruleSet, remoteConfig, files)
-	}
-}
-
 func refreshTokens(ctx context.Context, log *zap.Logger) {
 	type authRequest struct {
-		ServerName string `json:"server_name"`
-		Key        string `json:"key"`
+		Key string `json:"key"`
 	}
 
 	type authResponse struct {
@@ -324,8 +248,7 @@ func refreshTokens(ctx context.Context, log *zap.Logger) {
 	fetchToken := func(remote *config.RemoteConfig) (string, error) {
 		client := http.Client{Timeout: time.Second * 120}
 		body, errEnc := json.Marshal(authRequest{
-			ServerName: remote.Name,
-			Key:        remote.Password,
+			Key: remote.Password,
 		})
 
 		if errEnc != nil {
@@ -385,9 +308,6 @@ func Start() {
 		logger             = config.MustCreateLogger()
 		fileScanTicker     = time.NewTicker(time.Second * 2)
 		tokenRefreshTicker = time.NewTicker(time.Hour * 6)
-		uploadHandlers     = map[config.RemoteServiceType]uploaderFunc{
-			config.GBansDemos: uploadGbansType(config.GBansDemos, logger),
-		}
 	)
 
 	for _, rules := range config.Global.Rules {
@@ -410,7 +330,7 @@ func Start() {
 		case <-updateChan:
 			refreshTokens(ctx, logger)
 		case <-fileScanTicker.C:
-			if errCheck := update(ctx, logger, config.Global.Rules, config.Global.Remotes, uploadHandlers); errCheck != nil {
+			if errCheck := update(ctx, logger, config.Global.Rules, config.Global.Remotes); errCheck != nil {
 				logger.Error("Failed to update", zap.Error(errCheck))
 
 				continue
